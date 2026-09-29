@@ -1,16 +1,19 @@
 package com.example.jwt.service;
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
-import io.jsonwebtoken.security.Keys;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.JWSSigner;
+import com.nimbusds.jose.JWSVerifier;
+import com.nimbusds.jose.crypto.MACSigner;
+import com.nimbusds.jose.crypto.MACVerifier;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 
-import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
-import java.util.function.Function;
 
 @Service
 public class JwtService {
@@ -21,101 +24,83 @@ public class JwtService {
     @Value("${security.jwt.expiration-time}")
     private long expirationTime;
 
-    // ==========================
-    // Tạo SecretKey
-    // ==========================
-    private SecretKey getSignInKey() {
-
-        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
-
-        return Keys.hmacShaKeyFor(keyBytes);
+    // ==========================================
+    // Lấy secret bytes phục vụ ký và xác thực
+    // ==========================================
+    private byte[] getSigningKeyBytes() {
+        return secretKey.getBytes(StandardCharsets.UTF_8);
     }
 
-    // ==========================
-    // Tạo JWT
-    // ==========================
+    // ==========================================
+    // 1. Tạo JWT bằng Nimbus
+    // ==========================================
     public String generateToken(UserDetails userDetails) {
+        try {
+            // Tạo Header thuật toán HMAC SHA-256
+            JWSHeader header = new JWSHeader(JWSAlgorithm.HS256);
 
-        return Jwts.builder()
-                .subject(userDetails.getUsername())
-                .issuedAt(new Date(System.currentTimeMillis()))
-                .expiration(
-                        new Date(
-                                System.currentTimeMillis()
-                                        + expirationTime
-                        )
-                )
-                .signWith(getSignInKey())
-                .compact();
+            // Tạo Claims
+            Date now = new Date();
+            Date expiryDate = new Date(now.getTime() + expirationTime);
+
+            JWTClaimsSet claimsSet = new JWTClaimsSet.Builder()
+                    .subject(userDetails.getUsername())
+                    .issueTime(now)
+                    .expirationTime(expiryDate)
+                    .build();
+
+            // Đóng gói JWT
+            SignedJWT signedJWT = new SignedJWT(header, claimsSet);
+
+            // Ký token với MACSigner (Nimbus)
+            JWSSigner signer = new MACSigner(getSigningKeyBytes());
+            signedJWT.sign(signer);
+
+            // Tuần tự hóa sang chuỗi ký tự
+            return signedJWT.serialize();
+
+        } catch (Exception e) {
+            throw new RuntimeException("Lỗi khi tạo JWT với Nimbus: " + e.getMessage(), e);
+        }
     }
 
-    // ==========================
-    // Lấy username từ JWT
-    // ==========================
+    // ==========================================
+    // 2. Trích xuất username (Subject) từ JWT
+    // ==========================================
     public String extractUsername(String token) {
-
-        return extractClaim(
-                token,
-                Claims::getSubject
-        );
+        try {
+            SignedJWT signedJWT = SignedJWT.parse(token);
+            return signedJWT.getJWTClaimsSet().getSubject();
+        } catch (Exception e) {
+            throw new RuntimeException("Lỗi khi trích xuất username từ JWT: " + e.getMessage(), e);
+        }
     }
 
-    // ==========================
-    // Lấy Claim
-    // ==========================
-    public <T> T extractClaim(
-            String token,
-            Function<Claims, T> claimsResolver
-    ) {
+    // ==========================================
+    // 3. Kiểm tra tính hợp lệ của Token
+    // ==========================================
+    public boolean isTokenValid(String token, UserDetails userDetails) {
+        try {
+            SignedJWT signedJWT = SignedJWT.parse(token);
 
-        final Claims claims = extractAllClaims(token);
+            // Xác minh chữ ký với MACVerifier
+            JWSVerifier verifier = new MACVerifier(getSigningKeyBytes());
+            if (!signedJWT.verify(verifier)) {
+                return false;
+            }
 
-        return claimsResolver.apply(claims);
-    }
+            // Kiểm tra subject và hạn sử dụng
+            JWTClaimsSet claimsSet = signedJWT.getJWTClaimsSet();
+            String username = claimsSet.getSubject();
+            Date expirationTime = claimsSet.getExpirationTime();
 
-    // ==========================
-    // Lấy tất cả Claims
-    // ==========================
-    private Claims extractAllClaims(String token) {
+            return username != null
+                    && username.equals(userDetails.getUsername())
+                    && expirationTime != null
+                    && expirationTime.after(new Date());
 
-        return Jwts.parser()
-                .verifyWith(getSignInKey())
-                .build()
-                .parseSignedClaims(token)
-                .getPayload();
-    }
-
-    // ==========================
-    // Kiểm tra JWT
-    // ==========================
-    public boolean isTokenValid(
-            String token,
-            UserDetails userDetails
-    ) {
-
-        final String username = extractUsername(token);
-
-        return username.equals(userDetails.getUsername())
-                && !isTokenExpired(token);
-    }
-
-    // ==========================
-    // Kiểm tra hết hạn
-    // ==========================
-    private boolean isTokenExpired(String token) {
-
-        return extractExpiration(token)
-                .before(new Date());
-    }
-
-    // ==========================
-    // Lấy expiration
-    // ==========================
-    private Date extractExpiration(String token) {
-
-        return extractClaim(
-                token,
-                Claims::getExpiration
-        );
+        } catch (Exception e) {
+            return false;
+        }
     }
 }
