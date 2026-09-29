@@ -1,6 +1,7 @@
 **url test cho postman**
 
 cách đăng ký
+
 post http://localhost:8080/auth/register
 {
     "username": "user1",
@@ -9,6 +10,7 @@ post http://localhost:8080/auth/register
 }
 
 cách đăng nhập
+
 post: http://localhost:8080/auth/login
 {
     "username": "user1",
@@ -21,6 +23,7 @@ return
 }
 
 cách vào trang chủ(profile)
+
 get: http://localhost:8080/users/me
 chọn authorization, Auth type là bearer token(nhập token vào)
 
